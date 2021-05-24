@@ -48,6 +48,7 @@
       ansible.builtin.include_role:
         name: cloudera_deploy
         tasks_from: refresh_inventory
+        public: yes
       vars:
         include_inventory_file: "{{ init__dynamic_inventory_artefact }}"
 
@@ -55,6 +56,7 @@
       when:
         - "'teardown' not in ansible_run_tags"
         - "'cluster' in groups"
+        - use_download_mirror | default(default_enable_download_mirror) | bool
       ansible.builtin.include_role:
         name: cloudera_deploy
         tasks_from: inject_download_mirror
