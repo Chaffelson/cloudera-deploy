@@ -176,6 +176,7 @@
       cloudera_license_file: "{{ license_file | default(omit) }}"
       gcloud_credential_file: "{{ gcloud_credential_file | default(omit) }}"
       env_vars: "{{ env_vars | default(omit) }}"
+      force_teardown: "{{ purge | default(False) }}"
 
 - name: Merge overwrite globals from Definition file with Globals on User File
   when: __def_vars.globals is defined
