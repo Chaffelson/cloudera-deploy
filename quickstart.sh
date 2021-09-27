@@ -23,6 +23,18 @@ IMAGE_TAG=${provider}-${IMAGE_VER}
 IMAGE_FULL_NAME=${IMAGE_NAME}:${IMAGE_TAG}
 CONTAINER_NAME=cloudera-deploy
 
+if command -v \docker &> /dev/null; then
+  DOCKERCMD="docker"
+  echo "Found docker command"
+elif command -v \podman &> /dev/null; then
+  DOCKERCMD="podman"
+  echo "Found podman Command"
+else
+  echo "'docker' or 'podman' are required and do not seem to be available"
+  exit 1
+fi
+
+
 # dir of script
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )";
 # parent dir of that dir
@@ -30,10 +42,8 @@ PARENT_DIRECTORY="${DIR%/*}"
 
 PROJECT_DIR=${1:-${PARENT_DIRECTORY}}
 
-echo "Checking if Docker is running..."
-{ docker info >/dev/null 2>&1; echo "Docker OK"; } || { echo "Docker is required and does not seem to be running - please start Docker and retry" ; exit 1; }
-
-docker pull ${IMAGE_NAME}:"${IMAGE_TAG}"
+echo "Attempting to pull updated Container image for ${IMAGE_FULL_NAME}"
+${DOCKERCMD} pull "${IMAGE_FULL_NAME}"
 
 echo "Ensuring default credential paths are available in calling using profile for mounting to execution environment"
 for thisdir in ".aws" ".ssh" ".cdp" ".azure" ".kube" ".config" ".config/cloudera-deploy/log" ".config/cloudera-deploy/profiles"
@@ -60,9 +70,6 @@ else
   ANSIBLE_COLLECTIONS_PATH="/opt/cldr-runner/collections"
 fi
 
-echo "Mounting ${PROJECT_DIR} to container as Project Directory /runner/project"
-echo "Creating Container ${CONTAINER_NAME} from image ${IMAGE_FULL_NAME}"
-
 echo "Checking if ssh-agent is running..."
 if pgrep -x "ssh-agent" >/dev/null
 then
@@ -88,18 +95,20 @@ fi
 
 echo "SSH authentication for container taken from ${SSH_AUTH_SOCK}"
 
-if [ ! "$(docker ps -q -f name=${CONTAINER_NAME})" ]; then
-    if [ "$(docker ps -aq -f status=exited -f name=${CONTAINER_NAME})" ]; then
+
+if [ ! "$($DOCKERCMD ps -q -f name=${CONTAINER_NAME})" ]; then
+    if [ "$($DOCKERCMD ps -aq -f status=exited -f name=${CONTAINER_NAME})" ]; then
         # cleanup if exited
         echo "Attempting removal of exited execution container named '${CONTAINER_NAME}'"
-        docker rm "${CONTAINER_NAME}" >/dev/null 2>&1 || echo "Execution container '${CONTAINER_NAME}' already removed, continuing..."
+        $DOCKERCMD rm "${CONTAINER_NAME}" >/dev/null 2>&1 || echo "Execution container '${CONTAINER_NAME}' already removed, continuing..."
     fi
     # create new container if not running
-    echo "Creating new execution container named '${CONTAINER_NAME}'"
-    docker run -td \
+    echo "Mounting ${PROJECT_DIR} to container as Project Directory /runner/project"
+    echo "Creating new Container ${CONTAINER_NAME} from image ${IMAGE_FULL_NAME}"
+    $DOCKERCMD run -td \
       --detach-keys="ctrl-@" \
-      -v "${PROJECT_DIR}":/runner/project \
-      --mount type=bind,src=${SSH_AUTH_SOCK},target=/run/host-services/ssh-auth.sock \
+      -v "${PROJECT_DIR}":/runner/project:Z \
+      -v "${SSH_AUTH_SOCK}:/run/host-services/ssh-auth.sock:Z" \
       -e SSH_AUTH_SOCK="/run/host-services/ssh-auth.sock" \
       -e ANSIBLE_LOG_PATH="/home/runner/.config/cloudera-deploy/log/${CLDR_BUILD_VER:-latest}-$(date +%F_%H%M%S)" \
       -e ANSIBLE_INVENTORY="inventory" \
@@ -111,23 +120,25 @@ if [ ! "$(docker ps -q -f name=${CONTAINER_NAME})" ]; then
       -e ANSIBLE_COLLECTIONS_PATH="${ANSIBLE_COLLECTIONS_PATH}" \
       -e ANSIBLE_ROLES_PATH="/opt/cldr-runner/roles" \
       -e AWS_DEFAULT_OUTPUT="json" \
-      --mount "type=bind,source=${HOME}/.aws,target=/home/runner/.aws" \
-      --mount "type=bind,source=${HOME}/.config,target=/home/runner/.config" \
-      --mount "type=bind,source=${HOME}/.ssh,target=/home/runner/.ssh" \
-      --mount "type=bind,source=${HOME}/.cdp,target=/home/runner/.cdp" \
-      --mount "type=bind,source=${HOME}/.azure,target=/home/runner/.azure" \
-      --mount "type=bind,source=${HOME}/.kube,target=/home/runner/.kube" \
+      -v "${HOME}/.aws:/home/runner/.aws:Z" \
+      -v "${HOME}/.config:/home/runner/.config:Z" \
+      -v "${HOME}/.ssh:/home/runner/.ssh:Z" \
+      -v "${HOME}/.cdp:/home/runner/.cdp:Z" \
+      -v "${HOME}/.azure:/home/runner/.azure:Z" \
+      -v "${HOME}/.kube:/home/runner/.kube:Z" \
       --network="host" \
       --name "${CONTAINER_NAME}" \
       "${IMAGE_FULL_NAME}" \
       /usr/bin/env bash
 
     echo "Installing the cloudera-deploy project to the execution container '${CONTAINER_NAME}'"
-    docker exec -td "${CONTAINER_NAME}" /usr/bin/env git clone https://github.com/cloudera-labs/cloudera-deploy.git /opt/cloudera-deploy --depth 1
+    $DOCKERCMD exec -td "${CONTAINER_NAME}" /usr/bin/env git clone https://github.com/cloudera-labs/cloudera-deploy.git /opt/cloudera-deploy --depth 1
 
     if [ -n "${CLDR_COLLECTION_PATH}" ]; then
-      docker exec -td "${CONTAINER_NAME}" /usr/bin/env rm -rf /opt/cldr-runner/collections/ansible_collections/cloudera
+      $DOCKERCMD exec -td "${CONTAINER_NAME}" /usr/bin/env rm -rf /opt/cldr-runner/collections/ansible_collections/cloudera
     fi
+else
+  echo "Found existing Container ${CONTAINER_NAME}, launching new terminal session"
 fi
 
 cat <<SSH_HOST_KEY
@@ -142,7 +153,7 @@ cat <<SSH_HOST_KEY
 SSH_HOST_KEY
 
 echo 'Quickstart? Run this command -- ansible-playbook /opt/cloudera-deploy/main.yml -e "definition_path=examples/sandbox" -t run,default_cluster'
-docker exec \
+$DOCKERCMD exec \
   --detach-keys="ctrl-@" \
   -it "${CONTAINER_NAME}" \
   /usr/bin/env bash
